@@ -1,0 +1,16 @@
+appId: com.winding.planner
+productName: winding-planner
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+asarUnpack:
+  - resources/**
+win:
+  executableName: winding-planner
+nsis:
+  artifactName: ${name}-${version}-setup.${ext}
+npmRebuild: false
