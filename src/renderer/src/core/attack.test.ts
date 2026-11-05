@@ -13,10 +13,15 @@ interface Line {
   f: number | null
 }
 
-/** G-code'u bağımsız olarak geri okur (planın iç yapısına bakmadan). */
-function parse(gcode: string): { lines: Line[]; layerRadius: number[] } {
+/**
+ * G-code'u bağımsız olarak geri okur (planın iç yapısına bakmadan). Modal: satırda olmayan eksen önceki
+ * değerini korur (REQ-001: 4 eksende ilk konumlama yalnız-Y / Y'siz G0 satırlarıdır). `start` tek satır
+ * okumada önceki konumdur.
+ */
+function parse(gcode: string, start?: Omit<Line, 'code' | 'f'>): { lines: Line[]; layerRadius: number[] } {
   const lines: Line[] = []
   const layerRadius: number[] = []
+  let pos = start ?? { x: 0, a: 0, c: 0, y: null as number | null }
   for (const raw of gcode.split('\n')) {
     const lm = /^\(Katman \d+: .* yaricap=([\d.]+)/.exec(raw)
     if (lm) layerRadius.push(Number(lm[1]))
@@ -26,7 +31,8 @@ function parse(gcode: string): { lines: Line[]; layerRadius: number[] } {
       const r = new RegExp(`${ax}(-?[\\d.]+)`).exec(raw)
       return r ? Number(r[1]) : null
     }
-    lines.push({ code: m[1], x: g('X')!, a: g('A')!, c: g('C')!, y: g('Y'), f: g('F') })
+    pos = { x: g('X') ?? pos.x, a: g('A') ?? pos.a, c: g('C') ?? pos.c, y: g('Y') ?? pos.y }
+    lines.push({ code: m[1], ...pos, f: g('F') })
   }
   return { lines, layerRadius }
 }
@@ -90,7 +96,7 @@ describe('rastgele girdilerle sağlamlık', () => {
         }
         const mm = /^(G0|G1) /.exec(raw)
         if (!mm) continue
-        const L = parse(raw).lines[0]
+        const L = parse(raw, prev).lines[0]
         if (mm[1] === 'G0') {
           prev = { x: L.x, a: L.a, c: L.c, y: L.y ?? 0 }
           seenFirstPosition = true

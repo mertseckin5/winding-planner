@@ -26,6 +26,50 @@ export interface VerifyReport {
   finalPos: Record<AxisKey, number>
   /** G-code süresi / plan süresi (plan verildiyse) */
   planTimeRatio: number | null
+  /** REQ-005 ivme raporu; hiçbir etkin eksende ivme limiti girilmemişse null */
+  accel: AccelReport | null
+}
+
+/** Bir G1 sınırında (ardışık iki G1 arası veya duruş ↔ G1) bir eksenin hız sıçraması. Birimler saniye tabanlı. */
+export interface AccelEvent {
+  /** Sınırdan sonraki G1'in satırı (programın/duraklamanın sonundaysa son G1'in satırı) */
+  line: number
+  axis: AxisKey
+  /** |v_sonraki − v_önceki| (mm/s veya °/s); duruş tarafı 0 */
+  deltaV: number
+  /** min(T_önceki, T_sonraki) (s); duruş tarafı sayılmaz */
+  minT: number
+  /** İstenen ivme |Δv| / min(T) (mm/s² veya °/s²) */
+  demand: number
+  /** Rampa süresi |Δv|/a > min(T): bu hızlara bu hareket içinde ulaşılamaz */
+  unreachable: boolean
+}
+
+export interface AccelReport {
+  /** Kullanılan ivme limitleri (yalnız girilmiş, etkin eksenler) */
+  limits: Partial<Record<AxisKey, number>>
+  /** Rapor (1): rampa süresi komşu hareketten uzun olan sınır sayısı ve ilk satırı */
+  unreachable: number
+  firstUnreachableLine: number | null
+  /** Rapor (2): eksen başına tepe |Δv|/min(T) ve tepe |Δv| */
+  peak: Partial<Record<AxisKey, { demand: number; demandLine: number; deltaV: number; deltaVLine: number }>>
+  /** Rapor (2) ayrıntısı: Δv > 0 olan her sınır × ivmeli eksen */
+  events: AccelEvent[]
+  /** Rapor (3): her sınırda tam durma varsayımıyla süre üst sınırı (dak) = süre + Σ max_eksen (|v₁| + |v₂|)/(2a) */
+  boundMinutes: number
+  /** Ek bilgi: v²/(2a) > |Δ| olan G1 sayısı (tek hareket içinde bu hıza çıkılıp durulamaz) */
+  shortMoves: number
+}
+
+/** Kullanıcının girdiği etkin eksen ivme limitleri (sonlu, pozitif); boş = o eksende kontrol yok. */
+export function activeAccel(machine: MachineConfig): Partial<Record<AxisKey, number>> {
+  const out: Partial<Record<AxisKey, number>> = {}
+  const keys = machine.axisCount === 4 ? KEYS : KEYS.slice(0, 3)
+  for (const k of keys) {
+    const v = machine.maxAccel?.[k]
+    if (v !== null && v !== undefined && Number.isFinite(v) && v > 0) out[k] = v
+  }
+  return out
 }
 
 const KEYS: AxisKey[] = ['carriage', 'mandrel', 'head', 'cross']
@@ -70,6 +114,60 @@ export function verifyGcode(text: string, machine: MachineConfig, plan?: Winding
   let ended = false
   let combinedG94 = false
 
+  // REQ-005: ivme. Her G1 sınırında eksen hızı sıçraması; ilk/son G1 ve M0/G0 çevresi duruş (komşu hız 0).
+  const acc = activeAccel(machine)
+  const accKeys = Object.keys(acc) as AxisKey[]
+  const accOn = accKeys.length > 0
+  type G1Rec = { line: number; T: number; v: Record<AxisKey, number> }
+  let lastG1: G1Rec | null = null
+  const events: AccelEvent[] = []
+  const accPeak: AccelReport['peak'] = {}
+  let unreachable = 0
+  let firstUnreachableLine: number | null = null
+  let extraSeconds = 0
+  let shortMoves = 0
+  const boundary = (p: G1Rec | null, n: G1Rec | null): void => {
+    if (!accOn || (p === null && n === null)) return
+    const line = (n ?? p)!.line
+    const minT = Math.min(p?.T ?? Infinity, n?.T ?? Infinity)
+    let worstExtra = 0
+    let flagged = false
+    for (const k of accKeys) {
+      const a = acc[k]!
+      const vp = p?.v[k] ?? 0
+      const vn = n?.v[k] ?? 0
+      worstExtra = Math.max(worstExtra, (Math.abs(vp) + Math.abs(vn)) / (2 * a))
+      const deltaV = Math.abs(vn - vp)
+      if (!(deltaV > EPS)) continue
+      const demand = deltaV / minT
+      const bad = deltaV / a > minT
+      if (bad) flagged = true
+      events.push({ line, axis: k, deltaV, minT, demand, unreachable: bad })
+      const pk = accPeak[k]
+      if (!pk) accPeak[k] = { demand, demandLine: line, deltaV, deltaVLine: line }
+      else {
+        if (demand > pk.demand) {
+          pk.demand = demand
+          pk.demandLine = line
+        }
+        if (deltaV > pk.deltaV) {
+          pk.deltaV = deltaV
+          pk.deltaVLine = line
+        }
+      }
+    }
+    extraSeconds += worstExtra
+    if (flagged) {
+      unreachable++
+      if (firstUnreachableLine === null) firstUnreachableLine = line
+    }
+  }
+  /** Duruş: M0/M1/M2/M30 veya G0 (önceki G1'den sonra eksenler durur) */
+  const stop = (): void => {
+    boundary(lastG1, null)
+    lastG1 = null
+  }
+
   const lines = text.split(/\r?\n/)
   if (/[^\x09\x0a\x0d\x20-\x7e]/.test(text)) add('error', 0, 'G-code ASCII dışı karakter içeriyor (kontrolcüler hata verebilir)')
 
@@ -107,6 +205,7 @@ export function verifyGcode(text: string, machine: MachineConfig, plan?: Winding
       } else if (w.letter === 'M') {
         if (!KNOWN_M.has(w.value)) add('warning', lineNo, `Bilinmeyen M${w.value}`)
         if (w.value === 2 || w.value === 30) ended = true
+        stop()
       } else if (w.letter === 'F') {
         lineF = w.value
         if (!Number.isFinite(w.value) || w.value <= 0) add('error', lineNo, `Geçersiz besleme F${w.value}`)
@@ -146,6 +245,7 @@ export function verifyGcode(text: string, machine: MachineConfig, plan?: Winding
     }
 
     if (motion === 0) {
+      stop()
       rapidMoves++
       if (feedMoves > 0) add('warning', lineNo, 'G1 sonrasında G0: elyaf bağlıyken hızlı hareket (elyaf gerilir/kopabilir)')
       return
@@ -167,7 +267,16 @@ export function verifyGcode(text: string, machine: MachineConfig, plan?: Winding
     else return
     minutes += t
     for (const k of KEYS) peak[k] = Math.max(peak[k], Math.abs(delta[k]) / t)
+    if (accOn) {
+      const T = t * 60
+      const v = Object.fromEntries(KEYS.map((k) => [k, delta[k] / T])) as Record<AxisKey, number>
+      const rec: G1Rec = { line: lineNo, T, v }
+      boundary(lastG1, rec)
+      lastG1 = rec
+      if (accKeys.some((k) => (v[k] * v[k]) / (2 * acc[k]!) > Math.abs(delta[k]) + EPS)) shortMoves++
+    }
   })
+  stop()
 
   if (!ended) add('warning', 0, 'Program M2/M30 ile bitmiyor')
   if (machine.controller === 'mach3' && combinedG94) {
@@ -225,5 +334,17 @@ export function verifyGcode(text: string, machine: MachineConfig, plan?: Winding
     }
   }
 
-  return { issues, feedMoves, rapidMoves, minutes, range, peak, finalPos, planTimeRatio }
+  let accel: AccelReport | null = null
+  if (accOn) {
+    accel = { limits: acc, unreachable, firstUnreachableLine, peak: accPeak, events, boundMinutes: minutes + extraSeconds / 60, shortMoves }
+    if (unreachable > 0) {
+      add(
+        'warning',
+        firstUnreachableLine ?? 0,
+        `İvme: ${unreachable} hareket sınırında hız sıçraması girilen ivmeyle komşu hareket içinde tamamlanamaz (kontrolcü yavaşlatır; süre üst sınırı ${accel.boundMinutes.toFixed(2)} dk)`
+      )
+    }
+  }
+
+  return { issues, feedMoves, rapidMoves, minutes, range, peak, finalPos, planTimeRatio, accel }
 }

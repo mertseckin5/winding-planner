@@ -3,7 +3,7 @@ import { generateGcode } from './gcode'
 import { baseInput, machine3, rng } from './test-fixtures'
 import type { Layer, MachineConfig, WindingInput } from './types'
 import { missingFields, patternCandidates, planWinding } from './winding'
-import { readGcode as read } from './gcode-reader.testutil'
+import { checkReq011, readGcode as read, stationaryRuns } from './gcode-reader.testutil'
 
 /**
  * Değişmez (invariant) testleri: üretilen G-code plandan ve verify.ts'ten bağımsız, satır satır geri okunur.
@@ -43,8 +43,13 @@ function randomCase(seed: number): { input: WindingInput; m: MachineConfig; labe
     zeroAxesAtStart: rand() < 0.7,
     invert: { carriage: rand() < 0.3, mandrel: rand() < 0.3, head: rand() < 0.3, cross: rand() < 0.3 }
   }
+  // REQ-003: C sözleşmesi rastgele (yeni 'fiber', eski 'mirror', eski kayıt = alan yok). Önceki rastgele
+  // diziyi bozmamak için ayrı üreteç.
+  const p = rng(seed + 500_000)()
+  if (p < 0.5) m.headAngleMode = 'fiber'
+  else if (p < 0.8) m.headAngleMode = 'mirror'
   const kinds = layers.map((l) => (l.kind === 'hoop' ? 'H' : l.dome ? 'D' : 'S')).join('')
-  return { input, m, label: `${axisCount}e ${m.feedMode} ${m.controller} dur=${m.pauseBetweenLayers} [${kinds}]` }
+  return { input, m, label: `${axisCount}e ${m.feedMode} ${m.controller} dur=${m.pauseBetweenLayers} C=${m.headAngleMode ?? 'yok'} [${kinds}]` }
 }
 
 describe('değişmezler: rastgele girdiler, G-code geri okuma', () => {
@@ -52,7 +57,7 @@ describe('değişmezler: rastgele girdiler, G-code geri okuma', () => {
     const { input, m, label } = randomCase(9000 + i)
     it(`#${i} ${label}`, () => {
       expect(missingFields(input, m.axisCount)).toEqual([])
-      const plan = planWinding(input, m.axisCount)
+      const plan = planWinding(input, m)
       const g = generateGcode(plan, input, m)
       expect(g).not.toMatch(/NaN|Infinity|undefined/)
       const rows = read(g, m)
@@ -66,10 +71,24 @@ describe('değişmezler: rastgele girdiler, G-code geri okuma', () => {
       expect(firstG1).toBeGreaterThan(-1)
       expect(motion.slice(firstG1).filter((r) => r.code === 'G0')).toEqual([])
 
-      // M1 hiç yok; M0 yalnız duraklatma açıkken ve katman sınırı sayısı kadar
+      // M1 hiç yok; M0 = ilk G1 öncesi elyaf bağlama (REQ-001, her zaman) + duraklatma açıksa katman sınırı sayısı
       expect(rows.filter((r) => r.code === 'M1')).toEqual([])
       const m0 = rows.filter((r) => r.code === 'M0')
-      expect(m0.length).toBe(m.pauseBetweenLayers ? input.layers.length - 1 : 0)
+      expect(m0.length).toBe((m.pauseBetweenLayers ? input.layers.length - 1 : 0) + 1)
+      expect(m0[0].line).toBeLessThan(motion[firstG1].line)
+      expect(firstG1).toBe(m.axisCount === 4 ? 3 : 1)
+
+      // REQ-003: 'fiber' sözleşmesinde tüm G1'lerde 0 ≤ C ≤ 180 (yazılan 3 ondalık)
+      if (m.headAngleMode === 'fiber') {
+        for (const r of motion) {
+          expect(r.pos.c).toBeGreaterThanOrEqual(0)
+          expect(r.pos.c).toBeLessThanOrEqual(180)
+        }
+        // REQ-011: her durağan aralıkta (ΔX = 0) C monoton, 90°'yi yalnız carriage yön değiştirince geçer
+        const runs = stationaryRuns(rows)
+        if (input.layers.some((l) => !(l.kind === 'helical' && l.dome)) || input.layers.length > 1) expect(runs.length).toBeGreaterThan(0)
+        checkReq011(runs)
+      }
       // M0 sonrasında: sonraki tüm hareketlerde A, M0 anındaki A'dan küçük değil; ilk hareket G1 (rewind/G0 yok)
       for (const p of m0) {
         const after = motion.filter((r) => r.line > p.line)

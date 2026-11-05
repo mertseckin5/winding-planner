@@ -35,8 +35,15 @@ export function firstWindSteps(machine: MachineConfig, opts: { hasDome?: boolean
       title: `Yalnız araba (${X})${four ? ` ve kafa (${C}, ${Y})` : ` ve kafa (${C})`}`,
       items: [
         `${X} kızağı serbest ve yağlı, limit anahtarları çalışıyor`,
-        `${C} kafa dönüşü ±90° komutlarında doğru yöne ve açıya gidiyor, kablo/elyaf yolu dolanmıyor`,
-        ...(four ? [`${Y} kafa boşluğu: en dış katman yarıçapında kafa mandrel ve uç parçalara çarpmıyor`] : [])
+        machine.headAngleMode === 'fiber'
+          ? `${C} kafa dönüşü 0°, 90°, 180° komutlarında doğru yöne ve açıya gidiyor (90° = elyaf çevresel, göz yarığı mandrel eksenine paralel), kablo/elyaf yolu dolanmıyor`
+          : `${C} kafa dönüşü ±90° komutlarında doğru yöne ve açıya gidiyor, kablo/elyaf yolu dolanmıyor`,
+        ...(four
+          ? [
+              `${Y} sıfırı mandrel ekseni: kafa göz çıkışı mandrel ekseninden ölçülen D mm uzaktayken ${Y} göstergesi D okuyor (program ${Y}'yi sıfırlamaz)`,
+              `${Y} kafa boşluğu: en dış katman yarıçapında kafa mandrel ve uç parçalara çarpmıyor`
+            ]
+          : [])
       ]
     },
     {
@@ -44,6 +51,7 @@ export function firstWindSteps(machine: MachineConfig, opts: { hasDome?: boolean
       items: [
         'Elyaf makaradan doğru yönde açılıyor, kılavuzlar ve payout gözü hizalı',
         'Gerilim düzeni en düşük ayarda; gerilim ölçer varsa sıfırlandı',
+        `Program ilk konumlamadan sonra M0'da durur${four ? ` (${Y} önce geri çekilir, sonra ${X}/${A}/${C}, sonra ${Y} yaklaşır)` : ''}: elyafı o anda bağla, Cycle Start ile devam et`,
         'Elyaf ucu mandrele sağlam bağlandı (bant, uç halkası veya pim)'
       ]
     },

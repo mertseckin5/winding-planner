@@ -114,8 +114,11 @@ export function generateSimKit(machine: MachineConfig): SimKit {
     const speed = userSpeed !== null && userSpeed !== undefined && userSpeed > 0 ? userSpeed : SIM_FALLBACK.speed[j.key]
     if (!(userSpeed !== null && userSpeed !== undefined && userSpeed > 0)) usedFallback.push(`${j.letter} azami hiz`)
     const perSec = speed / 60
-    const accel = SIM_FALLBACK.accel[j.key]
-    usedFallback.push(`${j.letter} ivme`)
+    // REQ-005: kullanıcı ivme girdiyse (/s², INI ile aynı birim) MAX_ACCELERATION ve STEPGEN_MAXACCEL bundan
+    const userAccel = machine.maxAccel?.[j.key]
+    const hasAccel = userAccel !== null && userAccel !== undefined && Number.isFinite(userAccel) && userAccel > 0
+    const accel = hasAccel ? userAccel : SIM_FALLBACK.accel[j.key]
+    if (!hasAccel) usedFallback.push(`${j.letter} ivme`)
 
     // Dönel eksenler sınırsız: MIN/MAX_LIMIT yazılmaz (LinuxCNC -1e99/1e99 kullanır)
     let minLimit = ''
@@ -140,6 +143,7 @@ export function generateSimKit(machine: MachineConfig): SimKit {
       ...(j.linear ? [minLimit, maxLimit] : []),
       `MAX_VELOCITY = ${num(perSec)}`,
       `MAX_ACCELERATION = ${num(accel)}`,
+      ...(hasAccel ? [`STEPGEN_MAXACCEL = ${num(accel)}`] : []),
       'HOME = 0',
       'HOME_SEARCH_VEL = 0',
       'HOME_LATCH_VEL = 0',
@@ -196,7 +200,16 @@ export function generateSimKit(machine: MachineConfig): SimKit {
     '',
     'SIM DEGERLERI (gercek makine degil, girilmemis alanlar icin deneme degeri):',
     ...(usedFallback.length > 0 ? usedFallback.map((u) => `- ${u}: simulasyon deneme degeri`) : ['- yok']),
-    'Ivme degerleri her zaman deneme degeridir; kisa hareketlerde gercek sureyi etkiler.',
+    'Girilmemis ivme degerleri deneme degeridir; kisa hareketlerde gercek sureyi etkiler.',
+    'Girilen ivmeler MAX_ACCELERATION ve STEPGEN_MAXACCEL olarak ayni yazildi (sim HAL icinde stepgen yok, yalniz bilgi).',
+    '',
+    'STEPGEN_MAXACCEL (gercek step/dir makine icin, MAKINEDE DOGRULANMADI):',
+    '- Gercek step/dir makinede STEPGEN_MAXACCEL, MAX_ACCELERATION degerine esit veya ondan kucukse',
+    '  stepgen komutu yetisemez ve following error gorulebilir.',
+    '- LinuxCNC ornek INI yorumlari ve stepconf ciktisi yaklasik %25 buyuk kullanir (or. 15 -> 18.75);',
+    '  backlash kompanzasyonu varsa yaklasik 2 kat onerilir.',
+    '- Dayanak forum ve ornek INI duzeyindedir (birincil belge okunmadi). Bu kit orani KENDISI UYGULAMAZ:',
+    '  girilen ivme aynen yazilir; gercek makinede degeri kendiniz secin ve deneyin.',
     ''
   ].join('\n')
 

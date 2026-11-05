@@ -164,6 +164,8 @@ describe('G-code', () => {
       ]
     }
     const g = generateGcode(planWinding(multi, 3), multi, { ...machine, pauseBetweenLayers: true })
-    expect(g.match(/^M0$/gm)?.length).toBe(1)
+    // 1 katman sınırı + REQ-001 ilk G1 öncesi elyaf bağlama
+    expect(g.match(/^M0$/gm)?.length).toBe(2)
+    expect(generateGcode(planWinding(multi, 3), multi, machine).match(/^M0$/gm)?.length).toBe(1)
   })
 })

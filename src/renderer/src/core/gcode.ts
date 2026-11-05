@@ -1,6 +1,7 @@
 import { controllerChecklist } from './checklist'
 import { moveMinutes, peakSpeeds, slowdownSummary } from './limits'
 import type { MachineConfig, WindingInput, WindingPlan } from './types'
+import { resolveHeadMode } from './winding'
 
 export function fmt(v: number, digits = 3): string {
   const s = v.toFixed(digits)
@@ -29,6 +30,11 @@ export function comment(text: string): string {
     .replace(/ı/g, 'i')
     .replace(/İ/g, 'I')
     .replace(/°/g, 'der')
+    .replace(/±/g, '+/-')
+    .replace(/φ/g, 'phi')
+    .replace(/α/g, 'alfa')
+    .replace(/[−–]/g, '-')
+    .replace(/≈/g, '~')
     .replace(/[^\x20-\x7e]/g, '?')
   return `(${ascii.replace(/[()\r\n]/g, ' ')})`
 }
@@ -38,8 +44,17 @@ export function comment(text: string): string {
  * G94: F, hareketin lineer bileşeninden (X/Y) türetilir; yalnız döner eksen hareketinde döner vektör (derece/dak).
  * G93: her G1 satırında F = 1 / hareket süresi (dak); tüm eksenler aynı anda biter.
  */
-export function generateGcode(plan: WindingPlan, input: WindingInput, machine: MachineConfig): string {
+export function generateGcode(
+  plan: WindingPlan,
+  input: WindingInput,
+  machine: MachineConfig,
+  opts: { title?: string; notes?: string[] } = {}
+): string {
   const { names, invert } = machine
+  // REQ-003: C değerleri planda; başlıktaki sözleşme açıklaması makineden. İkisi ayrışırsa yanlış C yazılır.
+  if (plan.headAngleMode !== resolveHeadMode(machine)) {
+    throw new Error(`G-code: plan C sözleşmesi (${plan.headAngleMode}) makine ayarıyla (${resolveHeadMode(machine)}) uyuşmuyor; planWinding'e makineyi ver`)
+  }
   const sign = (inv: boolean): number => (inv ? -1 : 1)
   const word = (name: string, v: number, inv: boolean): string => `${name}${fmt(v * sign(inv))}`
 
@@ -47,6 +62,10 @@ export function generateGcode(plan: WindingPlan, input: WindingInput, machine: M
   const lnx = machine.controller === 'linuxcnc'
 
   lines.push(comment('Filament winding - winding-planner'))
+  // REQ-008: deneme programı başlığı (ör. "DENEME: katman 3 ilk 1 devre")
+  if (opts.title) lines.push(comment(opts.title))
+  // REQ-008 ek: deneme uyarıları (ara katman denemesi)
+  for (const n of opts.notes ?? []) lines.push(comment(`UYARI: ${n}`))
   lines.push(
     comment(
       `Mandrel D=${input.mandrelDiameter} L=${input.windLength} bant=${input.bandWidth}x${input.bandThickness} v=${input.feedRate} mm/dak`
@@ -70,9 +89,12 @@ export function generateGcode(plan: WindingPlan, input: WindingInput, machine: M
   lines.push(machine.controller === 'linuxcnc' ? 'G21 G90 G17 G40 G49' : 'G21 G90 G17 G40 G80')
   lines.push(machine.feedMode)
   if (machine.zeroAxesAtStart) {
-    const zeros = [names.carriage, names.mandrel, names.head, ...(machine.axisCount === 4 ? [names.cross] : [])]
+    // REQ-001: Y mandrel ekseninden mutlak radyal uzaklık; sıfırı kontrolcüde kurulur, G92 ile sıfırlanmaz
+    const zeros = [names.carriage, names.mandrel, names.head]
     lines.push(`G92 ${zeros.map((n) => `${n}0`).join(' ')}`)
   }
+  // REQ-001: 4 eksende yaklaşım geri çekilmiş Y'den (programdaki en büyük Y; gizli değer değil)
+  const yBack = machine.axisCount === 4 ? plan.moves.reduce((mx, m) => Math.max(mx, m.y), -Infinity) : 0
 
   let prev = { x: 0, a: 0, c: 0, y: 0 }
   let layer = -1
@@ -87,7 +109,8 @@ export function generateGcode(plan: WindingPlan, input: WindingInput, machine: M
           `Katman ${layer + 1}: ${info.kind === 'hoop' ? 'hoop' : 'helisel'} aci=${fmt(info.angleDeg, 2)} yaricap=${fmt(info.radius, 2)} bant=${info.bands}${info.patternSkip > 1 ? ` j=${info.patternSkip}` : ''}${info.dome ? ` dom=${fmt(info.dome.height, 2)} r0=${fmt(info.dome.poleRadius, 2)}` : ''}`
         )
       )
-      if (machine.pauseBetweenLayers && layer > 0) {
+      // programın ilk katmanı değilse (deneme programı ara katmandan başlayabilir, REQ-008)
+      if (machine.pauseBetweenLayers && i > 0) {
         if (lnx) lines.push(`(MSG,Katman ${layer + 1} oncesi duraklama)`)
         lines.push('M0')
       }
@@ -105,7 +128,15 @@ export function generateGcode(plan: WindingPlan, input: WindingInput, machine: M
     // F planın tam ΔX'inden türetilirse yuvarlama süreyi %10'a kadar saptırır.
     const cur = { x: r3(m.x), a: r3(m.a), c: r3(m.c), y: machine.axisCount === 4 ? r3(m.y) : m.y }
     if (m.kind === 'position') {
-      lines.push(`G0 ${axes.join(' ')}`)
+      if (machine.axisCount === 4) {
+        // REQ-001 (b): önce yalnız Y geri, sonra X/A/C (Y sabit), sonra yalnız Y başlangıca
+        lines.push(`G0 ${word(names.cross, yBack, invert.cross)}`)
+        lines.push(`G0 ${axes.slice(0, 3).join(' ')}`)
+        lines.push(`G0 ${axes[3]}`)
+      } else lines.push(`G0 ${axes.join(' ')}`)
+      // REQ-001 (c): elyaf ilk konumlamadan sonra, ilk G1'den önce bağlanır (katman arası duraklamadan bağımsız)
+      lines.push(lnx ? '(MSG,Elyafi bagla, devam icin Cycle Start)' : comment('Elyafi bagla, devam icin Cycle Start'))
+      lines.push('M0')
     } else {
       // eksen hız limiti girildiyse süre uzar (F düşer); girilmediyse elyaf boyu / elyaf hızı
       const minutes = moveMinutes(prev, { ...m, ...cur }, input.feedRate!, machine)

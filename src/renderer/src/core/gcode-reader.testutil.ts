@@ -1,3 +1,4 @@
+import { expect } from 'vitest'
 import type { MachineConfig } from './types'
 
 /**
@@ -18,6 +19,61 @@ export interface Row {
   layerKind: string
   /** G93 modunda mı */
   inverse: boolean
+}
+
+/**
+ * G0/G1 satırları, baştaki konumlama G0'ları tek satıra indirgenmiş (sonuncusu = tam başlangıç konumu).
+ * REQ-001 ile 4 eksende ilk konumlama üç G0'dır; plan hareketleriyle (tek 'position') birebir eşleme için.
+ */
+export function motionRows(rows: Row[]): Row[] {
+  const motion = rows.filter((r) => r.code === 'G0' || r.code === 'G1')
+  const firstG1 = motion.findIndex((r) => r.code === 'G1')
+  return firstG1 > 0 ? motion.slice(firstG1 - 1) : motion
+}
+
+export interface StationaryRun {
+  /** Aralıktaki G1 satırları (ΔX = 0) */
+  rows: Row[]
+  /** Aralık başı konumu (önceki G1 satırı) */
+  before: Row
+  /** Önceki ve sonraki ΔX ≠ 0 G1'in ΔX işareti (carriage yönü) */
+  dirIn: number
+  dirOut: number
+  /** Başlangıç dahil C dizisi */
+  c: number[]
+  /** Toplam ΔA (derece) */
+  turn: number
+}
+
+/**
+ * Durağan aralıklar (REQ-010/011 tanımı), yalnız G-code'dan: ardışık iki ΔX ≠ 0 G1 arasındaki ΔX = 0 G1 dizileri.
+ * ΔX yazılan 3 ondalıktan; |ΔX| < 5e-4 → 0. İlk G1'den önceki konum (G0) ΔX ≠ 0 hareketi sayılmaz.
+ */
+export function stationaryRuns(rows: Row[]): StationaryRun[] {
+  const mr = motionRows(rows)
+  const out: StationaryRun[] = []
+  const dx = (k: number): number => mr[k].pos.x - mr[k - 1].pos.x
+  const moving = (k: number): boolean => k >= 1 && mr[k].code === 'G1' && Math.abs(dx(k)) >= 5e-4
+  let k = 1
+  while (k < mr.length) {
+    if (moving(k) || mr[k].code !== 'G1') {
+      k++
+      continue
+    }
+    const first = k
+    while (k < mr.length && mr[k].code === 'G1' && !moving(k)) k++
+    if (!moving(first - 1) || k >= mr.length || !moving(k)) continue
+    const run = mr.slice(first, k)
+    out.push({
+      rows: run,
+      before: mr[first - 1],
+      dirIn: Math.sign(dx(first - 1)),
+      dirOut: Math.sign(dx(k)),
+      c: [mr[first - 1].pos.c, ...run.map((r) => r.pos.c)],
+      turn: run[run.length - 1].pos.a - mr[first - 1].pos.a
+    })
+  }
+  return out
 }
 
 export function readGcode(gcode: string, m: MachineConfig): Row[] {
@@ -63,4 +119,23 @@ export function readGcode(gcode: string, m: MachineConfig): Row[] {
     rows.push({ line: i + 1, code: kind, pos: { ...pos }, f: fw ? Number(fw.slice(1)) : null, layer, layerKind, inverse })
   })
   return rows
+}
+
+/** REQ-011 kuralı (G-code'dan): C monoton; yön değişiyorsa (C₁ − 90)(C₂ − 90) ≤ 0, değişmiyorsa ≥ 0 */
+export function checkReq011(list: StationaryRun[]): number {
+  let n = 0
+  for (const run of list) {
+    let up = false
+    let down = false
+    for (let k = 1; k < run.c.length; k++) {
+      if (run.c[k] > run.c[k - 1] + 2e-3) up = true
+      if (run.c[k] < run.c[k - 1] - 2e-3) down = true
+    }
+    expect(up && down, `satır ${run.rows[0].line}: C ${run.c.join(' → ')} monoton değil`).toBe(false)
+    const p = (run.c[0] - 90) * (run.c[run.c.length - 1] - 90)
+    if (run.dirIn !== run.dirOut) expect(p, `satır ${run.rows[0].line}: yön değişiyor, C 90°'yi geçmeli`).toBeLessThanOrEqual(1e-3)
+    else expect(p, `satır ${run.rows[0].line}: yön aynı, C 90°'yi geçmemeli`).toBeGreaterThanOrEqual(-1e-3)
+    n++
+  }
+  return n
 }

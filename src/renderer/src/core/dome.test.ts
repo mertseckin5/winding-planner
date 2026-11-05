@@ -269,10 +269,13 @@ describe('rastgele girdilerle domlu sağlamlık', () => {
         chunks.forEach((chunk, ci) => {
           const c = plan.layers[ci].dome?.poleRadius
           if (c === undefined) return
+          // REQ-007: katman önceki domlu katmanın dom inişiyle başlar (önceki katmanın c'si)
+          const cPrev = ci > 0 ? plan.layers[ci - 1].dome?.poleRadius : undefined
+          const ok = (r: number, C: number, cc: number): boolean => Math.abs(r * Math.sin(Math.abs(C) * RAD) - cc) < cc * 3e-3 + 3e-3
           for (const l of parse(chunk)) {
             if (l.code !== 'G1') continue
             const r = l.y - (t + inp.standoff!)
-            expect(Math.abs(r * Math.sin(Math.abs(l.c) * RAD) - c)).toBeLessThan(c * 3e-3 + 3e-3)
+            expect(ok(r, l.c, c) || (cPrev !== undefined && ok(r, l.c, cPrev))).toBe(true)
           }
         })
       }

@@ -17,12 +17,15 @@ Karbon fiber / filament winding makinesi için G-code üreten yerel masaüstü u
 - `winding.ts` — yol planı. Açı α mandrel eksenine göre. Tek geçişte mandrel dönüşü Δθ = L·tanα / r.
 - Bant sayısı n = ceil(2πr·cosα / w). Devre (gidiş+dönüş) dönüşü θc = 2πN + 2π·j/n; uç dönüşü δ = (θc − 2Δθ)/2, asgari `turnDwellMinDeg` altına inmez (N artar).
 - **Desen atlaması j** (`Layer.patternSkip`, yok/null = 1 = önceki davranış birebir): gcd(j, n) = 1 ve 1 ≤ j ≤ n−1 zorunlu, değilse `missingFields` hata verir (n `layerBands` ile geometriden). Düz ve domlu helisel. `patternCandidates(input, i, axisCount)` → {j, nTurns, dwellDeg}, uç dönüşü küçükten büyüğe; arayüzde katman satırında seçim (ilk 60 aday + seçili). Otomatik seçim/puan yok. j>1 ise G-code katman yorumunda `j=` yazılır.
-- Mandrel hep aynı yönde döner, carriage yön değiştirir → ±α. C: gidişte +α, dönüşte −α; uçta dwell sırasında çevrilir.
+- Mandrel hep aynı yönde döner, carriage yön değiştirir → ±α. **C sözleşmesi seçilebilir** (`MachineConfig.headAngleMode`, REQ-003, `docs/engineering/decisions.md` ADR-003): `'fiber'` (yeni projede başlangıç) C = elyaf yön açısı [0,180]: gidiş φ, dönüş 180° − φ, dom kutbunda 90° sabit; `'mirror'` eski +φ/−φ. Alan yoksa (eski kayıt/persist) `'mirror'` ve arayüz + G-code başlığı "seçilmemiş" uyarır. Uygulama `Ctx.back(φ)`; plan sözleşmeyi `WindingPlan.headAngleMode`'da taşır, `generateGcode` makineyle uyuşmazsa hata atar. Kafa kinematiği kullanıcıya soruldu, yanıt yok.
+- `missingFields(input, target)` / `planWinding(input, target)`: target eksen sayısı (eski biçim: yalnız geometri, C ±φ, Re yok; testler ve `patternCandidates`) veya makine (uygulama). Makineyle: domlu katmanda X strok min/max zorunlu (REQ-002), 3 eksende girilmiş göz yarıçapı Re > her katman yarıçapı (REQ-004).
+- **İlk konumlama (REQ-001):** G92 yalnız X/A/C (Y mandrel ekseninden mutlak, sıfırı kontrolcüde). 4 eksende `G0 Y<en büyük Y>` → `G0 X A C` → `G0 Y<başlangıç>`; sonra her zaman `M0` (LinuxCNC'de önce MSG "Elyafi bagla").
+- **Serbest elyaf (REQ-004):** `LayerInfo.fiberLag` λ = √(Re² − r²)/sinα, g = √(Re² − r²)/tanα, domlu katmanda kutup λ; 4 eksende Re = gövde Y'si, 3 eksende `machine.eyeRadius` (boş = hesap yok). Yalnız rapor/uyarı, yol düzeltilmedi.
 - Hoop: adım = L / ceil(L/w), gidiş-dönüş. Her katman 2·bandThickness yarıçap ekler (gidiş-dönüş 2 kat).
 - 4 eksen: Y = katman dış yarıçapı + `standoff` (katman başında sabit).
 - `gcode.ts` — post-processor. `types.ts` — tipler.
 - **Domlu helisel katman** (`dome.ts` + `winding.ts: domedHelicalLayer`): silindir gövde x∈[0,L] + iki uçta yarım-elips dom (r = R·cos u, z = h·sin u; dom yüksekliği h kullanıcı girdisi, gizli varsayılan yok, ≤0 ise `missingFields`). Geodezik Clairaut: r·sinφ = c = R·sin(α) (R = katman yarıçapı = dom ekvator yarıçapı); kutup açıklığı r0 = c, eksenel konumu x = −h·cosα ve L + h·cosα (**X negatif olur**, uyarı verilir). Dom dönüşü θ_dom = ∫ tanφ·dm/r sayısal (Gauss–Legendre, u=u0·sinψ ile uç tekilliği giderilmiş); dom 24 parçaya bölünür, her parça ayrık G1. Kutup→kutup geçiş dönüşü passRot = 2·θ_dom + L·tanα/R.
-- **Domlu faz kuralı:** helisel ile aynı: n = ceil(2πR·cosα / w), devre (gidiş+dönüş) dönüşü 2πN + 2π/n, uç dönüşü (kutup açıklığında dwell) δ = (θc − 2·passRot)/2 ≥ turnDwellMinDeg olan en küçük N. Devre başlangıçları (sol kutup açıklığından çıkış) çevreyi n eşit parçaya böler. Dönüş yolu gidişin aynasıdır (x → L − x, C = −φ). C = φ (kutupta 90°, dwell'de ±90 çevrilir). 4 eksen: Y = yol yarıçapı + (bandThickness + standoff), dom profiline uyar. Kutup açıklığına bant sığmazsa (bands·w > 2π·r0) uyarı.
+- **Domlu faz kuralı:** helisel ile aynı: n = ceil(2πR·cosα / w), devre (gidiş+dönüş) dönüşü 2πN + 2π/n, uç dönüşü (kutup açıklığında dwell) δ = (θc − 2·passRot)/2 ≥ turnDwellMinDeg olan en küçük N. Devre başlangıçları (sol kutup açıklığından çıkış) çevreyi n eşit parçaya böler. Dönüş yolu gidişin aynasıdır (x → L − x, C = 180° − φ 'fiber' / −φ 'mirror'). Gidişte C = φ (kutupta 90°; dwell'de 'fiber' C sabit, 'mirror' ±90 çevrilir). 4 eksen: Y = yol yarıçapı + (bandThickness + standoff), dom profiline uyar. Kutup açıklığına bant sığmazsa (bands·w > 2π·r0) uyarı.
 - Önizleme: mandrel silueti domlu katman varsa dom dahil (en yüksek h), yol segment içinde yarıçap interpolasyonlu.
 
 ## Araştırma Bulgularından Uygulananlar (2026-10-29, docs/research/filament-winding-landscape.md)
@@ -31,7 +34,7 @@ Karbon fiber / filament winding makinesi için G-code üreten yerel masaüstü u
 - `dryrun.ts` — "Kuru test" programı: G91 artımlı, her eksen +10/−10, G93 seçiliyse X+A birlikte F2 (30 sn). Eksen yönü, A birimi ve besleme yorumu için.
 - G-code **G94 ile biter** (G93'te bırakılmasın). G-code yorumları ASCII'ye çevrilir (`°` → `der`, Türkçe karakter sadeleşir; `comment()` testle korunuyor).
 - Kontrolcü Mach3 seçilince besleme modu **G93 önerilir** (araştırma: Mach3'te G94 birleşik hareket F yorumu belirsiz); aşağıdan G94'e dönülebilir.
-- Henüz yapılmadı (araştırma önerileri): ayarlanabilir uç profili, dom segment sadeleştirme, kayma analizi, izotensoid dom, konik/polar, çarpışma simülasyonu, ivme modeli, 2B kapsama haritası, "ilk 1/5 devre" kısa program.
+- Henüz yapılmadı (araştırma önerileri): ayarlanabilir uç profili, dom segment sadeleştirme, izotensoid dom, konik/polar, çarpışma simülasyonu, 2B kapsama haritası. (Kayma kontrolü, ivme raporu ve ilk k devre programı tur 2'de eklendi: REQ-006/005/008; ivme süreye/F'e işlemez.)
 
 ## Rakip Karşılaştırması ve Düzeltilen Hatalar (2026-11-03, docs/research/flamenet-comparison.md)
 - Rakip (htuncerr00-sketch/flamenet-sar-m): kodu zip içinde, okunamadı; yalnız iki belgesi incelendi (denklem hataları raporda).
@@ -54,6 +57,27 @@ Karbon fiber / filament winding makinesi için G-code üreten yerel masaüstü u
 - **Proje dosyası** (`project.ts`): `serializeProject` (format + version 1 + input + machine), `parseProject` güvenilmez veri doğrulaması: boyut ≤ 1 MB, katman ≤ 200, tip/aralık (≤ 1e7), sonlu olmayan sayı reddi (`1e999`), bilinmeyen alanlar atılır, geçersiz/yinelenen katman kimliği yeniden adlandırılır, eksen adı tek büyük harf, F/G/M/N olamaz, etkin eksen adları farklı olmalı (arayüz bunu zorlamıyor, dosya zorluyor), eksik sayısal ölçü null (gizli varsayılan yok). Store `loadProject` tamamen değiştirir (birleştirmez). Hata mesajları Türkçe ve alan yolunu içerir.
 - Toplam 465 test (15 dosya).
 
+## Makine Mühendisi Gereksinimleri (2026-11-05, docs/engineering/)
+- REQ-001…004 MM onaylandı. Kabul testleri `mm-req.test.ts` (adlar REQ numaralı), `store.test.ts` (persist). Altın çıktılar bilerek güncellendi (ADR-005).
+- **Tur 2 (REQ-009, 005, 006, 007, 008) uygulandı, MM onayı bekliyor** (ADR-006…011, testler `mm-req2.test.ts`):
+  - REQ-009: 3 eksende Re > dış yarıçap (`plan.outerDiameter/2`, eşitlik hata); `plan.eyeClearance`, `LayerInfo.eyeClearance`.
+  - REQ-005: `machine.maxAccel` **/s²** (INI ile aynı; hız /dk). Yalnız `verify.ts` raporu (`report.accel`: ulaşılamaz sınır, tepe Δv ve Δv/minT, olay listesi, tam durmalı süre üst sınırı) ve sim kiti (`MAX_ACCELERATION`, `STEPGEN_MAXACCEL`). G-code/plan süresi ivmeyi kullanmaz.
+  - REQ-006: `input.friction` μ; `LayerInfo.slip` (düz x_t, θ_t; dom k_g/k_n; düz uç geçişi ΔA). μ boş → yalnız düz katmanda metin uyarısı.
+  - REQ-007: geçiş = [önceki domun inişi (gidiş, C = φ)] + gövde x = 0 (asgari uç dönüşü) + [yeni domun çıkışı (dönüş açısı)], hepsi `transition`, yeni katmana ait. Katman başı A'sı θ_dom kadar kayar.
+  - REQ-008: `trial.ts` `trialPlan` ilk k devre; `generateGcode(…, { title })`. Seçim store'da, proje dosyasında değil.
+- Toplam 541 test (18 dosya).
+- **Tur 3 (REQ-010, REQ-011, REQ-008 eki, S5) uygulandı, MM onayı bekliyor** (ADR-012…015, testler `mm-req3.test.ts`):
+  - REQ-010: `core/slip.ts` θ_req = |ln tan(ψ₂/2) − ln tan(ψ₁/2)|/μ ve **durağan aralık** (ardışık ΔX ≠ 0 hareketler arasındaki ΔX = 0 dizisi; önceki düz son dwell + geçiş gövdesi tek aralık; dom kutup dwell'i hariç). `slip.turnFullDeg` (düz 2θ_t, hoop kendi dönüşü), `transitionTurnDeg/RequiredDeg/Axial` her hedef türünde. ΔA < θ_req veya aralık monoton değilse uyarı. G-code değişmez.
+  - REQ-011 ('fiber'): önceki düz katmanın son dwell sonu C'si [dwell başı, gövde sonu] aralığına kıstırılır (düz→domlu, düz→hoop, düz→büyük açılı düz düzeldi). REQ-003 dwell ΔC ölçütünün tek istisnası bu dwell.
+  - REQ-008 ek: `trialWarnings` (katman > 1), `generateGcode(…, { notes })` başlıkta `(UYARI: …)`. MM'nin faz kayması sayısı yazılmadı (ADR-014, soru S9).
+  - S5: sim kiti README'de STEPGEN_MAXACCEL notu (oran uygulanmaz).
+- Toplam 561 test (19 dosya).
+
+## Paketleme (2026-11-05)
+- `npm run build:win` → `dist/winding-planner-<sürüm>-setup.exe` (NSIS, productName "Winding Planner", imzasız, kullanıcı başına, kurulum dizini seçilebilir, masaüstü + başlat menüsü kısayolu). README'de SmartScreen notu. 0.1.0: 120,9 MB.
+- Renderer paketleri (react, three, drei, lucide…) **devDependencies**'te: Vite renderer'ı paketliyor, electron-builder yalnız `dependencies`i asar'a koyar. `dependencies`'te yalnız ana süreç/preload'un çalışma anında `require` ettikleri (`@electron-toolkit/utils`, `/preload`). Taşımadan önce asar 161 MB, kurulum 143,8 MB idi.
+- Kurulum denemesi: `setup.exe /S /D=<dizin>`, kaldırma `"Uninstall winding-planner.exe" /S _?=<dizin>` (kaldırıcı kendini silmez). Kurulum `%LOCALAPPDATA%\winding-planner-updater\installer.exe` bırakır, kaldırma silmez: elle sil. userData = `%APPDATA%\winding-planner` (package.json `name`; dev ile ortak dizin, origin farklı olduğundan localStorage ayrı).
+
 ## Teknoloji Yığını
 Electron + electron-vite, React 19 + TypeScript, Tailwind v4, React Three Fiber (önizleme), Zustand, Vitest. CNC Planner ile aynı yığın (`C:\Users\user\cnc-planner`).
 
@@ -72,12 +96,23 @@ Electron + electron-vite, React 19 + TypeScript, Tailwind v4, React Three Fiber 
 - Test `parse` yardımcıları 3 eksende Y'yi bulamaz (0 döndürmeli); domlu yolda dönüş geçişinde C negatiftir, Clairaut kontrolünde |C| kullan.
 - `react` ve `react-dom` package.json'a açıkça eklenmeli (build "react-dom/client çözülemedi" der).
 
-- Kapsamlı test dosyalarının rolü: `winding.test.ts` temel, `attack.test.ts` rastgele girdi + G-code geri okuma, `dome.test.ts` dom, `research-features.test.ts` hız/kontrol listesi/kuru test, `invariants.test.ts` değişmezler + saldırgan girdiler, `golden.test.ts` bit bit çıktı, `pattern.test.ts` j, `speedlimit.test.ts`, `thickness.test.ts`, `pole-feed.test.ts`, `firstWind.test.ts`, `project.test.ts`.
+- Kapsamlı test dosyalarının rolü: `mm-req*.test.ts` MM kabul testleri (tur 1–3), `winding.test.ts` temel, `attack.test.ts` rastgele girdi + G-code geri okuma, `dome.test.ts` dom, `research-features.test.ts` hız/kontrol listesi/kuru test, `invariants.test.ts` değişmezler + saldırgan girdiler, `golden.test.ts` bit bit çıktı, `pattern.test.ts` j, `speedlimit.test.ts`, `thickness.test.ts`, `pole-feed.test.ts`, `firstWind.test.ts`, `project.test.ts`.
 - **Toplam süre testi parça hatalarını gizler:** G94'te kutup yakını parçalar %10 sapıyordu ama toplam süre oranı %1 içindeydi. Kısa hareketler için parça başına kontrol yaz. F'i her zaman kontrolcünün göreceği yuvarlanmış koordinatlardan türet.
 - Limitle uzatılan harekette |Δ|/(|Δ|/limit) kayan noktada limiti 1 ulp aşabilir: katı `>` karşılaştırmaları (uyarılar) 1e-9 göreli pay ister; F'i aşağı yuvarla.
 - Git Bash'te `sed`/`node -e` ile `\n` içeren değiştirme kaçışı bozuluyor (satır kırıyor); dosya düzenlemede Edit aracı kullan. Vitest'te `console.log` çıktısı `--reporter=verbose` ile görünür.
 - CDP ile Electron sürerken "Kaydet/indir" düğmeleri yerel kaydetme diyaloğu açar: betikte `URL.createObjectURL` ve `HTMLAnchorElement.prototype.click` yakalanıp blob okunur; dosya açma `DOM.setFileInputFiles` ile. Örnek: scratchpad `drive-new.mjs`.
 - Konsolda `THREE.Clock deprecated` uyarısı R3F kaynaklı (bizim kod değil).
+- G-code test okuyucuları **modal** olmalı: 4 eksende ilk konumlama yalnız-Y / Y'siz G0 satırlarıdır; satırda olmayan eksen önceki değerini korur. Plan hareketleriyle satır eşlemek için `gcode-reader.testutil.motionRows` (baştaki G0'ları tek `position`a indirger).
+- G-code yorumunda Unicode simge `?` olur: `comment()` φ → phi, α → alfa, ± → +/-, − → - çevirir; yeni simge eklenirse oraya da ekle.
+- zustand persist varsayılanı `window.localStorage`: node testinde `vi.stubGlobal('window', { localStorage })` + `vi.resetModules()` ile hidrasyon denenir. Persist sığ birleştirir: kayıtlı `machine` nesnesi bütün olarak gelir, yeni alanlar eski kayıtta yok kalır (bilerek kullanıldı, ADR-003).
+- `electron-vite dev --remoteDebuggingPort 9222` ile Electron CDP'den sürülür; kapatmak için CDP `Browser.close` (süreç öldürme izni yok).
+- **Altın çıktı bilinçli değişince kanıtla:** yeni planı eski kurala geri indiren dönüşüm (ör. `mm-req2.test.ts` `collapseTransitions`) eski özeti bit bit veriyorsa fark yalnız o değişikliktendir. A birikimli olduğundan bir katmana eklenen dönüş sonraki tüm A'ları kaydırır; satır satır fark okunmaz.
+- Bash aracında uzun Python heredoc'u (`<<'EOF'`) bazen "unexpected EOF" ile bozuluyor; betiği scratchpad'e Write ile yazıp `python dosya.py` çalıştır.
+- Arayüzde G-code metin kutusu 200 000 karakterde kısaltılır; CDP betiğinde uzun programın sonunu textarea'dan okuma.
+- **MM ölçümünde görünmeyen ihlali rastgele değişmez testi bulur:** REQ-011 yalnız düz→domlu için raporlanmıştı; kural `invariants.test.ts`'e eklenip düzeltme kapatılınca (mutasyon) düz→hoop ve düz→düz ihlalleri de çıktı. Yeni fiziksel kuralı önce rastgele programlara ekle, sonra düzelt.
+- `readGcode` satırları yorum satırlarını da (`code: 'other'`, konum kopyası) içerir; satır sayarken `code === 'G1'` süz.
+- Test dosyasından `export` edip başka testte import etme (testler iki kez kaydolur); ortak yardımcılar `*.testutil.ts`'te.
+- Deneme/uyarı metinlerinde `≈` vardı, G-code'da `?` oldu: `comment()` artık `≈` → `~`.
 
 ## Donanım Durumu (2026-10-29)
 - Kullanıcının **şu an fiziksel makinesi yok** (makine yapılacak). "Makinede doğrula" maddeleri bu yüzden açık kalır; kuru test programı makine kurulunca kullanılacak.
@@ -92,6 +127,8 @@ Electron + electron-vite, React 19 + TypeScript, Tailwind v4, React Three Fiber 
 - Konik ve polar sarım yok.
 - Domlu sarım gerçek makinede doğrulanmadı. Model sürtünmesiz geodezik; kutup yığılması, kafanın dom yüzeyine teğetliği (C = φ, Y takibi), negatif X stroku ve kutuba yakın G94 F (lineer bileşen küçükken F çok düşer) kuru çalıştırmada kontrol edilmeli.
 - Farklı katmanlarda farklı dom yüksekliği girilirse önizleme mandrel silueti en yükseği gösterir.
-- j>1 desenlerde uç dönüşü kısalabilir (ör. Ø50 45° domlu: j=17 → 22,8°); kutupta C ±90° çevrilmesi daha kısa sürede olur, C tepe hızı çok yükselir (76 000 °/dk görüldü). C limiti girilirse süre uzatılır; girilmezse kontrolcü sessizce yavaşlatır. Makinede doğrulanmadı.
-- Hız limitine göre uzatma ivmeyi hesaba katmaz (yalnız hız); gerçek süre daha uzun olabilir.
+- j>1 desenlerde uç dönüşü kısalabilir (ör. Ø50 45° domlu: j=17 → 22,8°); eski ±φ sözleşmesinde kutupta C ±90° çevrilmesi daha kısa sürede olur, C tepe hızı çok yükselir (76 000 °/dk görüldü). 'fiber' sözleşmesinde kutupta C dönmez (S2 j=3 tepe C ≤ 200 °/s). Katman geçişinde C yine büyük dönebilir. Makinede doğrulanmadı.
+- Hız limitine göre uzatma ivmeyi hesaba katmaz (yalnız hız); ivme yalnız doğrulayıcıda üst sınır olarak raporlanır (REQ-005), gerçek süre daha uzun olabilir.
+- REQ-007 geçişinde dom inişinde C 90 → α₁ azalır, gövdede yeni başlangıca artar (S1 K1→K2: 90 → 30 → 89,1); MM S6 yanıtıyla fiziksel olarak doğru (Clairaut), ölçüt düzeltildi.
+- Kayma kontrolü (REQ-006/010) yalnız uyarır; kayma sınırlı uç profili yok. Pim halkası/uç tutucu kararı kullanıcıda.
 - Dom kalınlığı Y'yi kaydırmaz; yalnız gösterir ve 4 eksende negatif boşlukta uyarır.

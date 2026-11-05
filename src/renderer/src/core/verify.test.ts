@@ -24,7 +24,8 @@ describe('üretilen G-code doğrulayıcıdan temiz geçer', () => {
       expect(r.issues.filter((i) => i.level === 'warning')).toEqual([])
       expect(r.planTimeRatio).toBeCloseTo(1, 3)
       expect(r.feedMoves).toBe(plan.moves.filter((x) => x.kind !== 'position').length)
-      expect(r.rapidMoves).toBe(plan.moves.filter((x) => x.kind === 'position').length)
+      // REQ-001: 4 eksende tek konumlama üç G0 satırıdır (Y geri, X/A/C, Y başlangıç)
+      expect(r.rapidMoves).toBe(plan.moves.filter((x) => x.kind === 'position').length * (m.axisCount === 4 ? 3 : 1))
     })
   }
 

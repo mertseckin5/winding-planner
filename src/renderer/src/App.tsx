@@ -7,8 +7,10 @@ import { generateGcode } from './core/gcode'
 import { generateSimKit } from './core/simkit'
 import { MAX_PROJECT_BYTES, parseProject, serializeProject } from './core/project'
 import { hasAnySpeedLimit, peakSpeeds, slowdownSummary, speedWarnings } from './core/limits'
+import { trialPlan, trialWarnings } from './core/trial'
 import { verifyGcode } from './core/verify'
 import { missingFields, patternCandidates, planWinding, type PatternCandidate } from './core/winding'
+import type { HeadAngleMode } from './core/types'
 import { useStore } from './store'
 import { Preview } from './ui/Preview'
 
@@ -160,7 +162,7 @@ function PatternSelect({
 }
 
 export default function App(): React.JSX.Element {
-  const { input, machine, setInput, setMachine, addLayer, updateLayer, removeLayer, loadProject } = useStore()
+  const { input, machine, trial, setTrial, setInput, setMachine, addLayer, updateLayer, removeLayer, loadProject } = useStore()
   const [projectMsg, setProjectMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const saveProject = (): void => download(serializeProject(input, machine), 'winding-proje.json')
   const openProject = async (file: File | undefined): Promise<void> => {
@@ -177,12 +179,13 @@ export default function App(): React.JSX.Element {
   }
   const [progress, setProgress] = useState(1)
 
-  const missing = useMemo(() => missingFields(input, machine.axisCount), [input, machine.axisCount])
+  // makine verilir: domlu katmanda X stroku (REQ-002), 3 eksen göz yarıçapı (REQ-004), C sözleşmesi (REQ-003)
+  const missing = useMemo(() => missingFields(input, machine), [input, machine])
   const candidates = useMemo(
     () => input.layers.map((l, i) => (l.kind === 'helical' ? patternCandidates(input, i, machine.axisCount) : [])),
     [input, machine.axisCount]
   )
-  const plan = useMemo(() => (missing.length === 0 ? planWinding(input, machine.axisCount) : null), [input, machine.axisCount, missing])
+  const plan = useMemo(() => (missing.length === 0 ? planWinding(input, machine) : null), [input, machine, missing])
   const gcode = useMemo(() => (plan ? generateGcode(plan, input, machine) : ''), [plan, input, machine])
 
   // tepe hız ve süre eksen limitleri dahil (limits.moveMinutes): limit girildiyse aşan hareketler yavaşlatılır
@@ -203,6 +206,20 @@ export default function App(): React.JSX.Element {
   }
   const saveDryRun = (): void => download(generateDryRun(machine), `winding-kuru-test.${ext}`)
   const speedLimits = machine.maxSpeed ?? { carriage: null, mandrel: null, head: null, cross: null }
+  const accelLimits = machine.maxAccel ?? { carriage: null, mandrel: null, head: null, cross: null }
+  // REQ-008: seçilen katmanın ilk k devresi; seçim boşsa üretilmez
+  const trialOut = useMemo(() => {
+    if (!plan || trial.layer === null || trial.circuits === null) return null
+    try {
+      const tp = trialPlan(plan, input, trial.layer, trial.circuits)
+      // REQ-008 ek: ara katman denemesi uyarısı (arayüz + G-code başlığı)
+      const notes = trialWarnings(plan, input, trial.layer, machine.axisCount)
+      const g = generateGcode(tp, input, machine, { title: `DENEME: katman ${trial.layer + 1} ilk ${trial.circuits} devre`, notes })
+      return { ok: true as const, plan: tp, g, notes, report: verifyGcode(g, machine, tp) }
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) }
+    }
+  }, [plan, input, machine, trial])
   const report = useMemo(() => (plan && gcode ? verifyGcode(gcode, machine, plan) : null), [plan, gcode, machine])
   const travelOf = (k: 'carriage' | 'cross'): { min: number | null; max: number | null } =>
     machine.travel?.[k] ?? { min: null, max: null }
@@ -251,6 +268,13 @@ export default function App(): React.JSX.Element {
           {machine.axisCount === 4 && (
             <NumField label="Kafa boşluğu" unit="mm" value={input.standoff} onChange={(v) => setInput({ standoff: v })} />
           )}
+          <NumField
+            label="Sürtünme katsayısı μ (boş = kontrol yok)"
+            unit=""
+            value={input.friction ?? null}
+            onChange={(v) => setInput({ friction: v })}
+          />
+          <div className="pb-1 text-ink-3">Elyaf–mandrel (reçineli bant, ayırıcılı yüzey); uç dönüşü ve kutupta kayma kontrolü için. Ölçülmüş değer girin.</div>
         </Section>
 
         <Section title="Katmanlar">
@@ -382,11 +406,51 @@ export default function App(): React.JSX.Element {
               </span>
             </div>
           ))}
+          <SelectField
+            label={`Kafa (${machine.names.head}) açı sözleşmesi`}
+            value={machine.headAngleMode ?? ''}
+            options={[
+              ...(machine.headAngleMode ? [] : [{ value: '', label: 'Seçilmedi (eski kayıt: ±φ)' }]),
+              { value: 'fiber', label: 'Elyaf yönü 0–180°' },
+              { value: 'mirror', label: 'Simetrik ±φ (eski)' }
+            ]}
+            onChange={(v) => v && setMachine({ headAngleMode: v as HeadAngleMode })}
+          />
+          <div className="pb-1 text-ink-3" data-testid="head-mode-help">
+            {machine.headAngleMode === 'mirror'
+              ? `${machine.names.head} gidişte +φ, dönüşte −φ; uçta kafa 2φ (dom kutbunda 180°) çevrilir, göz bandı bükebilir.`
+              : `${machine.names.head} = elyafın eksene göre açısı: gidişte φ, dönüşte 180° − φ, dom kutbunda 90° sabit (0° eksenel, 90° çevresel). Bant bükülmez, uçta kafa az döner.`}{' '}
+            Kafanızın kinematiğine uyanı seçin; makinede doğrulanmadı.
+          </div>
+          {!machine.headAngleMode && (
+            <div className="pb-1 text-warning" data-testid="head-mode-legacy">
+              Bu kayıt C sözleşmesi seçilmeden önce yapılmış: çıktı eski simetrik ±φ ile yazılıyor (önceki sürümle aynı). Yukarıdan seçin.
+            </div>
+          )}
+          {machine.axisCount === 3 && (
+            <>
+              <NumField
+                label="Göz yarıçapı Re (boş = hesap yok)"
+                unit="mm"
+                value={machine.eyeRadius ?? null}
+                onChange={(v) => setMachine({ eyeRadius: v })}
+              />
+              <div className="pb-1 text-ink-3">
+                Mandrel ekseninden göz çıkışına radyal uzaklık; serbest elyaf, uç gecikmesi ve göz boşluğu (parçanın dış yarıçapından büyük
+                olmalı) için. Göz gövdesi daha içe uzanıyorsa boşluğu ona göre değerlendir.
+              </div>
+            </>
+          )}
           <Check label="Başta eksenleri sıfırla (G92)" checked={machine.zeroAxesAtStart} onChange={(v) => setMachine({ zeroAxesAtStart: v })} />
+          {machine.axisCount === 4 && (
+            <div className="pb-1 text-ink-3">
+              G92 {machine.names.cross}'yi sıfırlamaz: {machine.names.cross} mandrel ekseninden mutlak uzaklıktır, sıfırı kontrolcüde kurulur.
+            </div>
+          )}
           <Check label="Katmanlar arası dur (M0)" checked={machine.pauseBetweenLayers} onChange={(v) => setMachine({ pauseBetweenLayers: v })} />
         </Section>
 
-        <Section title="Eksen hız limitleri (boş = kontrol yok)">
+        <Section title="Eksen hız limitleri (dakika tabanlı, boş = kontrol yok)">
           {axisNames.map((k) => (
             <NumField
               key={k}
@@ -398,7 +462,29 @@ export default function App(): React.JSX.Element {
           ))}
         </Section>
 
-        <Section title="Eksen strok sınırları (boş = kontrol yok)">
+        <Section title="Eksen ivme limitleri (saniye tabanlı, boş = kontrol yok)">
+          {axisNames.map((k) => (
+            <NumField
+              key={k}
+              label={`${axisLabel[k]} (${machine.names[k]})`}
+              unit={k === 'carriage' || k === 'cross' ? 'mm/s²' : '°/s²'}
+              value={accelLimits[k]}
+              onChange={(v) => setMachine({ maxAccel: { ...accelLimits, [k]: v } })}
+            />
+          ))}
+          <div className="text-ink-3" data-testid="accel-units">
+            Dikkat birim: hız /dk, ivme /s² (LinuxCNC INI MAX_ACCELERATION ile aynı). Yalnız doğrulayıcı raporu ve sim kiti kullanır;
+            G-code değişmez.
+          </div>
+        </Section>
+
+        <Section title={hasDome ? 'Eksen strok sınırları (domlu katmanda X zorunlu)' : 'Eksen strok sınırları (boş = kontrol yok)'}>
+          {hasDome && (
+            <div className="pb-1 text-warning" data-testid="dome-travel-required">
+              Domlu katman var: {machine.names.carriage} alt ve üst sınırı zorunlu (dom {machine.names.carriage}'i −h·cosα'ya, ayna/punta
+              bölgesine götürür). Girilmezse G-code üretilmez.
+            </div>
+          )}
           {(machine.axisCount === 4 ? (['carriage', 'cross'] as const) : (['carriage'] as const)).map((k) => (
             <div key={k}>
               <NumField label={`${axisLabel[k]} (${machine.names[k]}) alt`} unit="mm" value={travelOf(k).min} onChange={(v) => setTravel(k, { min: v })} />
@@ -418,6 +504,54 @@ export default function App(): React.JSX.Element {
             <Download size={14} strokeWidth={1.5} /> LinuxCNC sim kiti
           </button>
           <div className="mt-1 text-ink-3">Sim kiti LinuxCNC kurulu olmayan ortamda yazıldı, çalıştırılmadı.</div>
+        </Section>
+
+        <Section title="Deneme programı (ilk k devre)">
+          <SelectField
+            label="Katman"
+            value={trial.layer ?? ''}
+            options={[
+              { value: '', label: 'Seçilmedi' },
+              ...input.layers.map((l, i) => ({
+                value: i,
+                label: `${i + 1} · ${l.kind === 'hoop' ? 'hoop' : `${l.angleDeg ?? '?'}°${l.dome ? ' domlu' : ''}`}`
+              }))
+            ]}
+            onChange={(v) => setTrial({ layer: v === '' ? null : Number(v) })}
+          />
+          <NumField label="Devre sayısı k (hoop: 1)" unit="" value={trial.circuits} onChange={(v) => setTrial({ circuits: v })} />
+          {trialOut && !trialOut.ok && (
+            <div className="text-critical" data-testid="trial-error">
+              {trialOut.error}
+            </div>
+          )}
+          {trialOut && trialOut.ok && (
+            <div className="text-ink-3" data-testid="trial-summary">
+              {trialOut.report.feedMoves} G1 · süre {trNum(trialOut.report.minutes, 2)} dk · elyaf {trNum(trialOut.plan.totalFiberLength / 1000, 2)} m ·
+              doğrulama{' '}
+              {trialOut.report.issues.some((i) => i.level === 'error')
+                ? `${trialOut.report.issues.filter((i) => i.level === 'error').length} hata`
+                : 'hata yok'}
+            </div>
+          )}
+          {trialOut && trialOut.ok && trialOut.notes.length > 0 && (
+            <ul className="mt-1 list-disc pl-4 text-warning" data-testid="trial-warnings">
+              {trialOut.notes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          )}
+          <button
+            className={`${BTN} mt-1 disabled:opacity-40`}
+            disabled={!trialOut?.ok}
+            onClick={() => trialOut?.ok && download(trialOut.g, `winding-deneme-k${trial.layer! + 1}-${trial.circuits}.${ext}`)}
+            title="Seçilen katmanın ilk k devresi: aynı başlık ve F kuralı, ilk konumlama + elyaf bağlama M0, sonda G94 + M2/M30"
+          >
+            <Download size={14} strokeWidth={1.5} /> Deneme programı
+          </button>
+          <div className="mt-1 text-ink-3">
+            {plan ? 'Ana G-code tamamsa üretilir. Makinede doğrulanmadı.' : 'Önce ana G-code için tüm alanlar doldurulmalı.'}
+          </div>
         </Section>
 
         <Section title="İlk sarım">
@@ -475,6 +609,12 @@ export default function App(): React.JSX.Element {
                   Dış çap {plan.outerDiameter.toFixed(2)} mm · elyaf {(plan.totalFiberLength / 1000).toFixed(1)} m · ~
                   {(slow?.minutes ?? plan.totalMinutes).toFixed(1)} dk · {plan.moves.length} hareket
                 </div>
+                {plan.eyeClearance !== null && (
+                  <div className={`mb-2 ${plan.eyeClearance > 0 ? 'text-ink-3' : 'text-critical'}`} data-testid="eye-clearance">
+                    Göz boşluğu (Re − dış yarıçap) {trNum(plan.eyeClearance, 2)} mm: göz çıkışı ile son katman yüzeyi arası. Yeterliliğine siz karar
+                    verin; göz gövdesi daha içe uzanıyorsa ona göre değerlendirin.
+                  </div>
+                )}
                 {slow && slow.slowedMoves > 0 && (
                   <div className="mb-2 text-warning" data-testid="slowdown">
                     Eksen hız limiti: {slow.slowedMoves} hareket yavaşlatıldı, süre +%
@@ -504,6 +644,24 @@ export default function App(): React.JSX.Element {
                       {report.planTimeRatio !== null && <> (plan oranı {report.planTimeRatio.toFixed(4)})</>} · {machine.names.carriage}{' '}
                       {report.range.carriage.min.toFixed(1)}…{report.range.carriage.max.toFixed(1)} mm
                     </div>
+                    {report.accel && (
+                      <div className="text-ink-3" data-testid="accel-report">
+                        İvme (girilen limitlerle): süre üst sınırı {trNum(report.accel.boundMinutes, 2)} dk (her sınırda tam durma) ·{' '}
+                        {report.accel.unreachable} sınırda hız komşu hareket içinde tamamlanamaz
+                        {report.accel.firstUnreachableLine !== null && <> (ilk satır {report.accel.firstUnreachableLine})</>}
+                        {(Object.keys(report.accel.peak) as (keyof typeof report.accel.peak)[]).map((k) => {
+                          const p = report.accel!.peak[k]!
+                          const u = k === 'carriage' || k === 'cross' ? 'mm/s' : '°/s'
+                          return (
+                            <div key={k}>
+                              {machine.names[k]}: tepe istenen ivme {Math.round(p.demand)} {u}² (satır {p.demandLine}, limit {report.accel!.limits[k]}) ·
+                              tepe hız sıçraması {trNum(p.deltaV)} {u} (satır {p.deltaVLine})
+                            </div>
+                          )
+                        })}
+                        {report.accel.shortMoves > 0 && <div>{report.accel.shortMoves} hareket tek başına bu hıza çıkıp duramayacak kadar kısa (bilgi)</div>}
+                      </div>
+                    )}
                     {report.issues.map((i, n) => (
                       <div key={n} className={i.level === 'error' ? 'text-critical' : 'text-warning'}>
                         {i.line > 0 ? `Satır ${i.line}: ` : ''}
@@ -527,6 +685,37 @@ export default function App(): React.JSX.Element {
                       {l.kind === 'helical' && <> · desen j={l.patternSkip} · uç dönüşü {l.turnDwellDeg.toFixed(1)}°</>}
                       {l.dome && <> · kutup açıklığı r₀ {l.dome.poleRadius.toFixed(2)} mm</>}
                     </div>
+                    {l.fiberLag && (
+                      <div className="text-ink-3" data-testid={`fiber-lag-${l.index}`}>
+                        Serbest elyaf λ {trNum(l.fiberLag.freeLength)} mm · uç gecikmesi g {trNum(l.fiberLag.axialLag)} mm (Re{' '}
+                        {trNum(l.fiberLag.eyeRadius)} mm)
+                        {l.fiberLag.poleFreeLength !== null && <> · kutupta λ {trNum(l.fiberLag.poleFreeLength)} mm</>}
+                      </div>
+                    )}
+                    {l.eyeClearance !== null && (
+                      <div className="text-ink-3" data-testid={`eye-clearance-${l.index}`}>
+                        Göz boşluğu bu katmanın dış yüzeyine {trNum(l.eyeClearance, 2)} mm
+                      </div>
+                    )}
+                    {l.slip && (
+                      <div className="text-ink-3" data-testid={`slip-${l.index}`}>
+                        Kayma (μ {String(l.slip.friction).replace('.', ',')}):{' '}
+                        {[
+                          l.slip.turnFullDeg !== null && l.slip.turnRotationDeg !== null && l.slip.turnAxial !== null
+                            ? `kaymasız tam uç dönüşü ≥ ${trNum(l.slip.turnFullDeg)}° (her yarıda ${trNum(l.slip.turnRotationDeg)}°), ≥ ${trNum(l.slip.turnAxial)} mm uç taşması`
+                            : null,
+                          l.slip.turnFullDeg !== null && l.slip.turnRotationDeg === null
+                            ? `uç dönüşü için ≥ ${trNum(l.slip.turnFullDeg)}°`
+                            : null,
+                          l.slip.poleRatio !== null ? `kutup paraleli k_g/k_n ${trNum(l.slip.poleRatio, 3)}` : null,
+                          l.slip.transitionRequiredDeg !== null && l.slip.transitionTurnDeg !== null && l.slip.transitionAxial !== null
+                            ? `katman geçişi ≥ ${trNum(l.slip.transitionRequiredDeg)}° ve ≥ ${trNum(l.slip.transitionAxial)} mm gerekir, ΔA ${trNum(l.slip.transitionTurnDeg)}°`
+                            : null
+                        ]
+                          .filter((s) => s !== null)
+                          .join(' · ')}
+                      </div>
+                    )}
                     {l.dome && (
                       <div className="text-ink-3" data-testid={`thickness-${l.index}`}>
                         Kalınlık t(r):{' '}

@@ -2,6 +2,15 @@ export type Controller = 'linuxcnc' | 'mach3'
 export type FeedMode = 'G94' | 'G93'
 export type LayerKind = 'helical' | 'hoop'
 
+/**
+ * Kafa (C) açısı yazım sözleşmesi (REQ-003, docs/engineering/decisions.md ADR-003):
+ * - 'fiber': C = elyafın mandrel eksenine göre yön açısı, sürekli, [0°, 180°]. Gidiş φ, dönüş 180° − φ,
+ *   dom kutbunda 90° sabit (C = 0 elyaf eksenel, C = 90 elyaf çevresel). Göz bandı bükmez.
+ * - 'mirror': eski simetrik ±φ (gidiş +φ, dönüş −φ, kutupta ±90° çevrilir).
+ * Alan yoksa (eski kayıt) 'mirror' davranışı korunur ve arayüz/G-code başlığı uyarır.
+ */
+export type HeadAngleMode = 'fiber' | 'mirror'
+
 /** Makine tanımı: eksen adları, yönleri, denetleyici. Birimler: X mm, A/C derece. */
 export interface MachineConfig {
   controller: Controller
@@ -17,6 +26,18 @@ export interface MachineConfig {
   maxSpeed?: { carriage: number | null; mandrel: number | null; head: number | null; cross: number | null }
   /** Eksen strok sınırları (mm); null = girilmedi. Dönel eksenler sınırsız kabul edilir. Eski kayıtlarda yok olabilir. */
   travel?: { carriage?: TravelLimit; cross?: TravelLimit }
+  /** C yazım sözleşmesi; yok = eski kayıt (±φ, uyarılı). Yeni projelerde store 'fiber' başlatır. */
+  headAngleMode?: HeadAngleMode
+  /**
+   * 3 eksen: göz yarıçapı Re, mandrel ekseninden göz çıkış noktasına radyal uzaklık (mm); null/yok = girilmedi,
+   * serbest elyaf/gecikme hesabı yapılmaz (REQ-004). 4 eksende kullanılmaz (Re = katmanın Y'si).
+   */
+  eyeRadius?: number | null
+  /**
+   * REQ-005: eksen ivme limitleri, saniye tabanlı (X/Y mm/s², A/C °/s²; LinuxCNC INI MAX_ACCELERATION ile aynı birim).
+   * Hız limiti (maxSpeed) dakika tabanlıdır. null/yok = girilmedi, o eksende ivme kontrolü yapılmaz.
+   */
+  maxAccel?: { carriage: number | null; mandrel: number | null; head: number | null; cross: number | null }
 }
 
 export interface TravelLimit {
@@ -53,6 +74,8 @@ export interface WindingInput {
   turnDwellMinDeg: number | null
   /** 4 eksen: kafa ile sarım yüzeyi arasındaki radyal boşluk (mm) */
   standoff: number | null
+  /** REQ-006: elyaf–mandrel sürtünme katsayısı μ (birimsiz); null/yok = girilmedi, sayısal kayma kontrolü yapılmaz */
+  friction?: number | null
   layers: Layer[]
 }
 
@@ -87,6 +110,48 @@ export interface LayerInfo {
   /** Toplam bant genişliği / çevre (1 = tam kapsama, >1 örtüşme) */
   coverage: number
   warnings: string[]
+  /**
+   * REQ-004: göz ile temas noktası arasındaki serbest elyaf (gövde yarıçapında). Re girilmemişse (3 eksen) veya
+   * Re ≤ r ise null. λ = √(Re² − r²)/sinα, g = √(Re² − r²)/tanα.
+   */
+  fiberLag: {
+    /** Kullanılan göz yarıçapı Re (4 eksen: katmanın Y'si) */
+    eyeRadius: number
+    /** Serbest elyaf boyu λ (mm) */
+    freeLength: number
+    /** Eksenel gecikme g (mm): temas noktası kafanın bu kadar gerisinde */
+    axialLag: number
+    /** Domlu katman: kutupta λ = √(Re_kutup² − c²) (kutupta g = 0); diğerlerinde null */
+    poleFreeLength: number | null
+  } | null
+  /** REQ-009 (3 eksen, Re girildiyse): göz boşluğu Re − bu katmanın dış yüzey yarıçapı (mm); diğer durumlarda null */
+  eyeClearance: number | null
+  /**
+   * REQ-006/REQ-010 kayma kontrolü (μ girildiyse her katman; μ boşsa null). Kaymama koşulu k_g ≤ μ·k_n.
+   * Düz: yarım uç dönüşü (α → 90°) x_t = (r/μ)(1/sinα − 1), θ_t = (1/μ)·ln(cot(α/2)); tam dönüş 2θ_t.
+   * Domlu: kutup paralelinin k_g/k_n = (R/h)·√(R² − c²)/c.
+   * Durağan aralık (ΔX = 0) genel: θ_req = |ln tan(ψ₂/2) − ln tan(ψ₁/2)|/μ (slip.ts).
+   */
+  slip: {
+    friction: number
+    /** Düz helisel: yarım uç dönüşünün eksenel uzunluğu x_t (mm, uç taşması); diğerlerinde null */
+    turnAxial: number | null
+    /** Düz helisel: yarım uç dönüşü θ_t (derece); diğerlerinde null */
+    turnRotationDeg: number | null
+    /** Düz helisel: tam uç dönüşü φ → 180° − φ için gereken 2θ_t; hoop: kendi uç dönüşünün θ_req'i; domluda null */
+    turnFullDeg: number | null
+    /** Domlu: kutup paraleli k_g/k_n; diğerlerinde null */
+    poleRatio: number | null
+    /**
+     * Önceki katmandan geçişin durağan aralığındaki mandrel dönüşü ΔA (derece; önceki düz katmanın son dwell'i dahil);
+     * ilk katmanda null. Hedef katman türünden bağımsız (REQ-010).
+     */
+    transitionTurnDeg: number | null
+    /** Geçiş aralığı için θ_req (derece); ilk katmanda null */
+    transitionRequiredDeg: number | null
+    /** Geçiş aralığı için x_req (mm, yeni katman yarıçapıyla); ilk katmanda null */
+    transitionAxial: number | null
+  } | null
   /** Yalnız domlu helisel katman */
   dome?: {
     height: number
@@ -119,4 +184,8 @@ export interface WindingPlan {
   /** Planın hesaplandığı elyaf hızı (mm/dk) */
   feedRate: number
   outerDiameter: number
+  /** REQ-009 (3 eksen, Re girildiyse): göz boşluğu Re − outerDiameter/2 (mm); diğer durumlarda null */
+  eyeClearance: number | null
+  /** Planın C değerlerini yazdığı sözleşme; generateGcode makineninkiyle aynı olmasını şart koşar */
+  headAngleMode: HeadAngleMode
 }

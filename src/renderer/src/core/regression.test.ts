@@ -18,31 +18,41 @@ const mixed: WindingInput = {
 
 describe('H1: katman geçişinde G0 yok (elyaf bağlı)', () => {
   for (const axisCount of [3, 4] as const) {
-    it(`${axisCount} eksen: yalnız ilk satır G0, geçişler G1 ve doğrulayıcı temiz`, () => {
+    it(`${axisCount} eksen: yalnız ilk konumlama G0, geçişler G1 ve doğrulayıcı temiz`, () => {
       const m = { ...machine3, axisCount }
       const plan = planWinding(mixed, axisCount)
       const g = generateGcode(plan, mixed, m)
-      const g0 = g.split('\n').filter((l) => l.startsWith('G0'))
-      expect(g0.length).toBe(1)
+      const lines = g.split('\n')
+      const g0 = lines.filter((l) => l.startsWith('G0'))
+      // REQ-001: 4 eksende konumlama üç satır (Y geri, X/A/C, Y başlangıç); hepsi ilk G1'den önce
+      expect(g0.length).toBe(axisCount === 4 ? 3 : 1)
+      expect(lines.findIndex((l) => l.startsWith('G1'))).toBeGreaterThan(lines.lastIndexOf(g0[g0.length - 1]))
       const r = verifyGcode(g, m, plan)
       expect(r.issues).toEqual([])
     })
   }
 
-  it('geçiş hareketi: A asgari uç dönüşü kadar döner, X/C yeni katman başına gider', () => {
+  it('geçiş hareketi: gövde kısmı (ΔX = 0) A asgari uç dönüşü kadar döner; domdan çıkışta önce dom yolu (REQ-007)', () => {
     const plan = planWinding(mixed, 3)
     const tr = plan.moves.filter((x) => x.kind === 'transition')
-    expect(tr.length).toBe(2)
-    for (const t of tr) {
-      const i = plan.moves.indexOf(t)
-      const prev = plan.moves[i - 1]
+    // domlu → hoop: 24 dom inişi + 1 gövde; hoop → 30°: 1 gövde
+    expect(tr.length).toBe(26)
+    for (const t of tr) expect(t.fiberLength).toBeGreaterThan(0)
+    const body = tr.filter((t) => {
+      const prev = plan.moves[plan.moves.indexOf(t) - 1]
+      return Math.abs(t.x - prev.x) < 1e-12
+    })
+    expect(body.length).toBe(2)
+    for (const t of body) {
+      const prev = plan.moves[plan.moves.indexOf(t) - 1]
       expect(t.a - prev.a).toBeCloseTo(20, 9)
-      expect(t.fiberLength).toBeGreaterThan(0)
+      expect(t.x).toBe(0)
     }
-    // domlu katman X −28,3'te biter; hoop X 0'da başlar → geçişte X değişir ama G1 ile
+    // domlu katman X −28,3'te biter; geçiş dom yolu boyunca X 0'a iner (G1, X monoton artar)
     const first = plan.moves.indexOf(tr[0])
     expect(plan.moves[first - 1].x).toBeLessThan(-20)
-    expect(tr[0].x).toBe(0)
+    for (let i = first; i < first + 24; i++) expect(plan.moves[i].x).toBeGreaterThan(plan.moves[i - 1].x)
+    expect(plan.moves[first + 23].x).toBe(0)
   })
 
   it('geçişler toplam elyaf ve süreye dahil (plan ↔ G-code süre oranı 1)', () => {

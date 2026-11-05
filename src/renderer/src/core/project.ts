@@ -98,6 +98,8 @@ function parseInput(v: unknown): WindingInput {
     feedRate: num(o, 'feedRate', 'input', 0, true),
     turnDwellMinDeg: num(o, 'turnDwellMinDeg', 'input', 0, true),
     standoff: num(o, 'standoff', 'input', 0, false),
+    // REQ-006: yoksa (eski dosya) alan eklenmez; boş = kayma kontrolü yok
+    ...(own(o, 'friction') !== undefined ? { friction: num(o, 'friction', 'input', 0, true) } : {}),
     layers: arr.map((l, i) => parseLayer(l, i, used))
   }
 }
@@ -151,6 +153,17 @@ function parseMachine(v: unknown): MachineConfig {
       cross: num(so, 'cross', 'machine.maxSpeed', 0, true)
     }
   }
+  // REQ-005: ivme limitleri (/s²); her alan > 0 veya boş
+  const ma = own(o, 'maxAccel')
+  if (ma !== undefined && ma !== null) {
+    const ao = obj(ma, 'machine.maxAccel')
+    m.maxAccel = {
+      carriage: num(ao, 'carriage', 'machine.maxAccel', 0, true),
+      mandrel: num(ao, 'mandrel', 'machine.maxAccel', 0, true),
+      head: num(ao, 'head', 'machine.maxAccel', 0, true),
+      cross: num(ao, 'cross', 'machine.maxAccel', 0, true)
+    }
+  }
   const tr = own(o, 'travel')
   if (tr !== undefined && tr !== null) {
     const to = obj(tr, 'machine.travel')
@@ -160,6 +173,10 @@ function parseMachine(v: unknown): MachineConfig {
       if (t !== undefined && t !== null) m.travel[k] = parseTravel(t, `machine.travel.${k}`)
     }
   }
+  // REQ-003: yoksa (eski dosya) alan eklenmez → eski ±φ davranışı ve "seçilmemiş" uyarısı
+  if (own(o, 'headAngleMode') !== undefined) m.headAngleMode = oneOf(o, 'headAngleMode', 'machine', ['fiber', 'mirror'] as const)
+  // REQ-004: 3 eksen göz yarıçapı (mm), > 0; boş = hesap yok
+  if (own(o, 'eyeRadius') !== undefined) m.eyeRadius = num(o, 'eyeRadius', 'machine', 0, true)
   return m
 }
 

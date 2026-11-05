@@ -17,18 +17,13 @@
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
-    "@electron-toolkit/utils": "^4.0.0",
-    "@fontsource-variable/ibm-plex-sans": "^5.3.0",
-    "@react-three/drei": "^10.7.9",
-    "@react-three/fiber": "^9.8.2",
-    "lucide-react": "^1.55.0",
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "three": "^0.186.1",
-    "zustand": "^5.0.16"
+    "@electron-toolkit/utils": "^4.0.0"
   },
   "devDependencies": {
     "@electron-toolkit/tsconfig": "^2.0.0",
+    "@fontsource-variable/ibm-plex-sans": "^5.3.0",
+    "@react-three/drei": "^10.7.9",
+    "@react-three/fiber": "^9.8.2",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
@@ -38,9 +33,14 @@
     "electron": "^44.7.2",
     "electron-builder": "^26.15.3",
     "electron-vite": "^6.0.0",
+    "lucide-react": "^1.55.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "tailwindcss": "^4.3.3",
+    "three": "^0.186.1",
     "typescript": "^5.9.3",
     "vite": "^8.3.4",
-    "vitest": "^5.0.5"
+    "vitest": "^5.0.5",
+    "zustand": "^5.0.16"
   }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { generateGcode } from './gcode'
-import { readGcode } from './gcode-reader.testutil'
+import { motionRows, readGcode } from './gcode-reader.testutil'
 import { baseInput, machine3, rng } from './test-fixtures'
 import type { MachineConfig, WindingInput } from './types'
 import { verifyGcode } from './verify'
@@ -41,7 +41,7 @@ describe('kutup yakını G94 F: parça süresi planla %1 içinde, F ≥ 5 anlaml
     it(c.name, () => {
       const plan = planWinding(c.input, c.m.axisCount)
       const g = generateGcode(plan, c.input, c.m)
-      const rows = readGcode(g, c.m).filter((r) => r.code === 'G0' || r.code === 'G1')
+      const rows = motionRows(readGcode(g, c.m))
       expect(rows.length).toBe(plan.moves.length)
       const lines = g.split('\n')
       let near = 0

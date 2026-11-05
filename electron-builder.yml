@@ -1,16 +1,27 @@
 appId: com.winding.planner
-productName: winding-planner
+productName: Winding Planner
 directories:
   buildResources: build
+  output: dist
 files:
   - '!**/.vscode/*'
   - '!src/*'
+  - '!docs/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!{vitest.config.ts,eslint.config.mjs,CLAUDE.md,README.md}'
 asarUnpack:
   - resources/**
 win:
   executableName: winding-planner
+  target: nsis
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Winding Planner
+  uninstallDisplayName: Winding Planner
 npmRebuild: false

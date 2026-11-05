@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { generateGcode } from './gcode'
-import { readGcode } from './gcode-reader.testutil'
+import { motionRows, readGcode } from './gcode-reader.testutil'
 import { baseInput, machine3, rng } from './test-fixtures'
 import type { Layer, MachineConfig, WindingInput } from './types'
 import { missingFields, patternCandidates, planWinding } from './winding'
@@ -25,7 +25,7 @@ const mod360 = (v: number): number => ((v % 360) + 360) % 360
  * A'nın arttığı her G1 (uç dönüşü sonu = sonraki devrenin başı). Ayrıca tüm uç dönüşü ΔA'ları.
  */
 function circuitStarts(g: string, m: MachineConfig): { starts: number[]; dwells: number[] } {
-  const rows = readGcode(g, m).filter((r) => r.code === 'G0' || r.code === 'G1')
+  const rows = motionRows(readGcode(g, m))
   const startX = rows[0].pos.x
   const starts = [rows[0].pos.a]
   const dwells: number[] = []
