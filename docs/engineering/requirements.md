@@ -164,6 +164,9 @@ S1 (Re = Y): 30° gövde λ = 135,1 mm, **g = 117,0 mm**; 55° λ = 83,0 mm, **g
 Gereksinim: katman > 1 seçiliyken deneme bölümünde ve G-code başlığında uyarı: "Önceki katmanlar sarılı varsayıldı; boş mandrelde bant yuvası (j) kontrolü geçersiz (bu katmanda ≈ X°/geçiş kayma); A sıfırı önceki sarımla aynı referansta olmalı". X = yukarıdaki formül, Δr = katman yol yarıçapı − (mandrel yarıçapı + bant kalınlığı). Ayrı yarıçap seçeneği istenmez (tam programdan farklı bir program üretir).
 Kabul: S1 K3 k=1 başlığında uyarı var ve X = 17,7 ±0,1; K1 denemesinde uyarı yok.
 
+**Düzeltme (tur 4, S9 yanıtı).** Yukarıdaki 17,7°/geçiş ve "yuva kontrolü geçersiz" **yanlıştı** (benim hatam). Program A ve X'i komut eder; silindirde her helis geodeziktir, elyaf komut edilen kinematiği izler: tan α' = (r'/r)·tan α, geçiş dönüşü ΔA = L·tanα/r yarıçaptan bağımsız kalır, temas noktasının açısal konumu A ile belirlenir (göz açısal ofseti acos(r/Y) sabit fark verir, birikmez). Benim formülüm elyafın α'yı koruyup dönüşün yeniden hesaplandığını varsayıyordu; komut edilen A'lı makinede bu olmaz. Ölçüm (`scripts/measure-2026-11-05-r4.mm.test.ts`, S1 K3 boş mandrel r' 60,25): α' 54,56°, bant açısal genişliği 9,785° → 9,839° (+%0,55), yuva aralığı 9,730° (örtüşme 0,056° → 0,109°), göz ofseti +0,84° sabit, uç gecikmesi g 47,6 → 49,0 mm. Yuva (j) kontrolü açısal olarak geçerlidir; değişen elyaf açısı, örtüşme ve uç dönüşünün eksenel yeridir.
+Düzeltilmiş kabul: S1 K3 k=1 başlığında uyarı var; uyarı Δr = 1,00 ±0,01 mm ve boş mandrel elyaf açısı 54,56 ±0,01° içerir; "°/geçiş kayma" sayısı yoktur; K1 denemesinde uyarı yok. (ADR-014 uygulaması bunu sağlıyor.)
+
 ---
 
 ## REQ-009 — 3 eksende göz yarıçapı parçanın dış yüzeyiyle karşılaştırılır (P0, tur 2, S1 yanıtı)
@@ -215,6 +218,8 @@ Kontrol: 1/sin(ψ) ile REQ-006 formülü ψ₁ = α, ψ₂ = 90° için aynen ç
 
 **Dayanak.** Ölçüm tur 3 betiği, REQ-007 bölümü ("S3 K1→K2: C 55,00→150,00, giriş yönü (dwell) …").
 **Makinede doğrulanacak.** Kafa kinematiği varsayımı (REQ-003 kullanıcı sorusu) doğrulanınca bu kural anlamlıdır.
+
+**Not (tur 4, S10 yanıtı).** Kural düz → hoop, düz → büyük açılı düz ve düz → domlu (α₂ > α₁) geçişlerini de kapsar (yazılım mühendisinin rastgele testte bulduğu ihlaller; tur 4 ölçümünde S4–S8 ile doğrulandı). C'nin aralık içindeki dağıtımı (kıskaç / A ile orantılı) bu REQ'in kapsamı dışında; kıskaç kabul edildi (ADR-013).
 
 ---
 
